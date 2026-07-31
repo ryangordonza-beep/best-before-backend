@@ -30,4 +30,17 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { signToken, requireAuth, requireAdmin, JWT_SECRET };
+// Separate from the admin key on purpose: a till/staff device carries
+// far more exposure risk (handled daily, physically at a counter) than
+// the admin key (used occasionally from a laptop). If a staff key ever
+// leaks, it should only expose "confirm a payment", never "upload
+// competitor prices" or "trigger a catalogue sync".
+function requireStaff(req, res, next) {
+  const key = req.headers['x-staff-key'];
+  if (!key || key !== process.env.STAFF_API_KEY) {
+    return res.status(403).json({ error: 'Invalid staff key' });
+  }
+  next();
+}
+
+module.exports = { signToken, requireAuth, requireAdmin, requireStaff, JWT_SECRET };

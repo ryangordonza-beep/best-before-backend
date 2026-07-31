@@ -254,3 +254,5 @@ router.get('/me/transactions', requireAuth, (req, res) => {
 });
 
 module.exports = router;
+module.exports.computeBasket = computeBasket;
+module.exports.POINTS_RATE = POINTS_RATE;

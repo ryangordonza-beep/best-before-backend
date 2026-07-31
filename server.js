@@ -11,6 +11,7 @@ const db = require('./db');
 const { signToken, requireAuth, requireAdmin } = require('./auth');
 const { syncFromWooCommerce } = require('./sync');
 const commerceRouter = require('./commerce');
+const staffRouter = require('./staff');
 
 const app = express();
 app.use(cors());
@@ -43,12 +44,29 @@ function generateLoyaltyCode() {
 // AUTH: register + login
 // ---------------------------------------------------------------------
 
+// Accepts common South African formats (0821234567, +27821234567,
+// 082 123 4567) and normalises to 0821234567. Deliberately strict about
+// length — a 9-digit or 11-digit-without-27-prefix number is far more
+// likely to be a typo than a real SA mobile number, so we reject those
+// rather than guess.
+function normalisePhone(raw) {
+  const digits = (raw || '').replace(/[^\d]/g, '');
+  if (digits.length === 10 && digits.startsWith('0')) return digits;
+  if (digits.length === 11 && digits.startsWith('27')) return '0' + digits.slice(2);
+  return null;
+}
+
 app.post('/auth/register', async (req, res) => {
-  const { name, email, password } = req.body || {};
+  const { name, email, phone, password } = req.body || {};
 
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
+  if (/\d/.test(name)) return res.status(400).json({ error: 'Name should not contain numbers' });
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
     return res.status(400).json({ error: 'A valid email is required' });
+  }
+  const normalisedPhone = normalisePhone(phone);
+  if (!normalisedPhone) {
+    return res.status(400).json({ error: 'Enter a valid 10-digit South African mobile number, e.g. 0821234567' });
   }
   if (!password || password.length < 8) {
     return res.status(400).json({ error: 'Password must be at least 8 characters' });
@@ -57,13 +75,16 @@ app.post('/auth/register', async (req, res) => {
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email.toLowerCase());
   if (existing) return res.status(409).json({ error: 'An account with that email already exists' });
 
+  const existingPhone = db.prepare('SELECT id FROM users WHERE phone = ?').get(normalisedPhone);
+  if (existingPhone) return res.status(409).json({ error: 'An account with that mobile number already exists' });
+
   const hash = await bcrypt.hash(password, 10);
   const loyaltyCode = generateLoyaltyCode();
 
   const tx = db.transaction(() => {
     const info = db
-      .prepare('INSERT INTO users (name, email, password_hash, loyalty_code) VALUES (?, ?, ?, ?)')
-      .run(name.trim(), email.toLowerCase(), hash, loyaltyCode);
+      .prepare('INSERT INTO users (name, email, phone, password_hash, loyalty_code) VALUES (?, ?, ?, ?, ?)')
+      .run(name.trim(), email.toLowerCase(), normalisedPhone, hash, loyaltyCode);
 
     // Signup bonus — mirrors Best Before's real site ("10 bonus points
     // when you register online").
@@ -94,7 +115,7 @@ app.post('/auth/login', async (req, res) => {
 });
 
 app.get('/auth/me', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT id, name, email, loyalty_code FROM users WHERE id = ?').get(req.user.id);
+  const row = db.prepare('SELECT id, name, email, phone, loyalty_code FROM users WHERE id = ?').get(req.user.id);
   if (!row) return res.status(404).json({ error: 'User not found' });
 
   const pointsRow = db
@@ -192,6 +213,7 @@ app.get('/me/scans', requireAuth, (req, res) => {
 // BASKET / CHECKOUT / REWARDS — see commerce.js
 // ---------------------------------------------------------------------
 app.use(commerceRouter);
+app.use(staffRouter);
 
 // ---------------------------------------------------------------------
 // ADMIN

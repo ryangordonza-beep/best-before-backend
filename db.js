@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   name          TEXT NOT NULL,
   email         TEXT NOT NULL UNIQUE,
+  phone         TEXT UNIQUE,       -- normalised to 0XXXXXXXXX; lets staff find a customer without the QR
   password_hash TEXT NOT NULL,
   loyalty_code  TEXT UNIQUE,       -- shown as a QR code at checkout; matched to a real till once POS is connected
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
