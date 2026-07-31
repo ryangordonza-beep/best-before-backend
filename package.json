@@ -4,7 +4,7 @@
   "description": "Backend API for the Best Before savings-comparison app (MVP)",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node seed.js && node server.js",
     "seed": "node seed.js"
   },
   "dependencies": {
