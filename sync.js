@@ -3,11 +3,6 @@
 // from their WooCommerce REST API, so "our price" is always accurate
 // without anyone re-typing it. This needs WC_CONSUMER_KEY / SECRET from
 // Best Before's WooCommerce > Settings > Advanced > REST API screen.
-//
-// If Best Before would rather not issue API keys, the fallback is a
-// nightly CSV export from WooCommerce (Products > Export) that gets
-// uploaded the same way admin.js handles competitor CSVs — same shape,
-// just skip this file and add a /admin/catalogue/upload route.
 
 const fetch = require('node-fetch');
 const db = require('./db');
@@ -39,7 +34,6 @@ async function syncFromWooCommerce() {
   let total = 0;
   let skippedNoBarcode = 0;
 
-  // WooCommerce paginates at up to 100 items per page.
   while (true) {
     const url =
       `${base.replace(/\/$/, '')}/wp-json/wc/v3/products` +
@@ -54,9 +48,6 @@ async function syncFromWooCommerce() {
 
     const tx = db.transaction((products) => {
       for (const p of products) {
-        // Best Before appears to use the barcode (EAN) as the SKU already,
-        // e.g. "5900649080515". Fall back to a global unique id (GTIN meta
-        // field) if a store ever names SKUs differently.
         const barcode = (p.sku || '').trim();
         if (!/^\d{8,14}$/.test(barcode)) {
           skippedNoBarcode += 1;

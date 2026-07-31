@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
   name          TEXT NOT NULL,
   email         TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
+  loyalty_code  TEXT UNIQUE,       -- shown as a QR code at checkout; matched to a real till once POS is connected
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -48,8 +49,7 @@ CREATE TABLE IF NOT EXISTS competitor_prices (
 CREATE INDEX IF NOT EXISTS idx_competitor_barcode ON competitor_prices(barcode);
 
 -- Every barcode a user scans, for "recently scanned" + basic analytics
--- on which products people actually want compared (useful for prioritising
--- which competitor prices to capture first).
+-- on which products people actually want compared.
 CREATE TABLE IF NOT EXISTS scan_history (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id       INTEGER NOT NULL,
@@ -58,6 +58,65 @@ CREATE TABLE IF NOT EXISTS scan_history (
   scanned_at    TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+-- "My Shop" basket. One row per line item. Snapshots the Best Before
+-- price at the moment it was added, so the basket total doesn't shift
+-- underneath the customer if a price changes while they're shopping.
+CREATE TABLE IF NOT EXISTS basket_items (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id       INTEGER NOT NULL,
+  barcode       TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  unit_price    REAL NOT NULL,
+  qty           INTEGER NOT NULL DEFAULT 1,
+  added_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+-- A confirmed checkout. Until real POS integration exists, "confirmed"
+-- actually means "the mock till-confirmation button was tapped" —
+-- see commerce.js checkout/confirm. status is kept as a column now so
+-- swapping in real POS reconciliation later (status: 'estimated' ->
+-- 'confirmed') doesn't require a schema change.
+CREATE TABLE IF NOT EXISTS transactions (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id           INTEGER NOT NULL,
+  subtotal          REAL NOT NULL,
+  savings_estimate  REAL NOT NULL,
+  points_awarded    INTEGER NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'confirmed',
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS transaction_items (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  transaction_id  INTEGER NOT NULL,
+  barcode         TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  unit_price      REAL NOT NULL,
+  qty             INTEGER NOT NULL,
+  FOREIGN KEY (transaction_id) REFERENCES transactions(id)
+);
+
+-- Append-only points ledger — never update or delete a row, only add
+-- new ones (positive = earned, negative = redeemed). The user's
+-- balance is always SUM(points) for that user, so there's exactly one
+-- source of truth and no risk of a stored "balance" column drifting
+-- out of sync with history.
+CREATE TABLE IF NOT EXISTS points_ledger (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         INTEGER NOT NULL,
+  points          INTEGER NOT NULL,
+  reason          TEXT NOT NULL, -- 'signup_bonus' | 'purchase' | 'redeemed' | 'manual_adjustment'
+  transaction_id  INTEGER,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (transaction_id) REFERENCES transactions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_points_ledger_user ON points_ledger(user_id);
+CREATE INDEX IF NOT EXISTS idx_basket_user ON basket_items(user_id);
 `);
 
 module.exports = db;

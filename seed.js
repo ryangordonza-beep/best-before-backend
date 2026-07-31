@@ -1,7 +1,7 @@
 // seed.js
 // Populates a handful of real products (from best-before.co.za's own
-// homepage) with made-up-but-plausible competitor prices, so you can run
-// the whole app end-to-end before wiring up WooCommerce sync / a real
+// homepage) with made-up-but-plausible competitor prices, so you can try
+// the app end-to-end before wiring up WooCommerce sync / a real
 // competitor price spreadsheet.
 //
 // Run with: npm run seed
@@ -40,24 +40,20 @@ const products = [
 ];
 
 const competitorPrices = [
-  // Mokate cappuccino
   { barcode: '5900649080515', retailer: 'Pick n Pay', price: 74.99 },
   { barcode: '5900649080515', retailer: 'Checkers', price: 79.99 },
   { barcode: '5900649080515', retailer: 'Woolworths', price: 89.0 },
   { barcode: '5900649080515', retailer: 'Spar', price: 78.5 },
 
-  // Sunshine Sugar
   { barcode: '6009900124117', retailer: 'Pick n Pay', price: 34.99 },
   { barcode: '6009900124117', retailer: 'Checkers', price: 33.99 },
   { barcode: '6009900124117', retailer: 'Spar', price: 36.0 },
 
-  // Flora Margarine
   { barcode: '6009710390153', retailer: 'Pick n Pay', price: 54.99 },
   { barcode: '6009710390153', retailer: 'Checkers', price: 52.99 },
   { barcode: '6009710390153', retailer: 'Woolworths', price: 59.99 },
   { barcode: '6009710390153', retailer: 'Spar', price: 55.5 },
 
-  // Aloe toothpaste
   { barcode: '6959183300350', retailer: 'Pick n Pay', price: 24.99 },
   { barcode: '6959183300350', retailer: 'Checkers', price: 22.99 },
 ];
