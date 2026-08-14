@@ -10,8 +10,10 @@ const { parse } = require('csv-parse/sync');
 const db = require('./db');
 const { signToken, requireAuth, requireAdmin } = require('./auth');
 const { syncFromWooCommerce } = require('./sync');
+const { parseInventoryExport } = require('./inventoryImport');
 const commerceRouter = require('./commerce');
 const staffRouter = require('./staff');
+const promosRouter = require('./promos');
 
 const app = express();
 app.use(cors());
@@ -19,18 +21,8 @@ app.use(express.json());
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ---------------------------------------------------------------------
-// Health check
-// ---------------------------------------------------------------------
 app.get('/', (req, res) => res.json({ ok: true, service: 'best-before-api' }));
 
-// ---------------------------------------------------------------------
-// Loyalty code generation — a 10-digit numeric code shown as a QR at
-// checkout. Once Best Before's POS is connected, this is the identifier
-// the till reads to link a transaction back to this account. Retries
-// on the rare collision (UNIQUE constraint) rather than trusting
-// randomness alone.
-// ---------------------------------------------------------------------
 function generateLoyaltyCode() {
   for (let attempt = 0; attempt < 10; attempt++) {
     const code = crypto.randomInt(1000000000, 9999999999).toString();
@@ -40,15 +32,6 @@ function generateLoyaltyCode() {
   throw new Error('Could not generate a unique loyalty code — try again');
 }
 
-// ---------------------------------------------------------------------
-// AUTH: register + login
-// ---------------------------------------------------------------------
-
-// Accepts common South African formats (0821234567, +27821234567,
-// 082 123 4567) and normalises to 0821234567. Deliberately strict about
-// length — a 9-digit or 11-digit-without-27-prefix number is far more
-// likely to be a typo than a real SA mobile number, so we reject those
-// rather than guess.
 function normalisePhone(raw) {
   const digits = (raw || '').replace(/[^\d]/g, '');
   if (digits.length === 10 && digits.startsWith('0')) return digits;
@@ -86,8 +69,6 @@ app.post('/auth/register', async (req, res) => {
       .prepare('INSERT INTO users (name, email, phone, password_hash, loyalty_code) VALUES (?, ?, ?, ?, ?)')
       .run(name.trim(), email.toLowerCase(), normalisedPhone, hash, loyaltyCode);
 
-    // Signup bonus — mirrors Best Before's real site ("10 bonus points
-    // when you register online").
     db.prepare(
       `INSERT INTO points_ledger (user_id, points, reason) VALUES (?, 10, 'signup_bonus')`
     ).run(info.lastInsertRowid);
@@ -124,10 +105,6 @@ app.get('/auth/me', requireAuth, (req, res) => {
 
   res.json({ user: { ...row, points_balance: pointsRow.balance } });
 });
-
-// ---------------------------------------------------------------------
-// PRODUCT LOOKUP BY BARCODE  ->  Best Before price + competitor prices + savings
-// ---------------------------------------------------------------------
 
 app.get('/products/:barcode', requireAuth, (req, res) => {
   const { barcode } = req.params;
@@ -192,7 +169,7 @@ app.post('/products/:barcode/submit-price', requireAuth, (req, res) => {
      VALUES (?, ?, ?, 'user_submitted', 0, ?)`
   ).run(barcode, retailer, price, req.user.id);
 
-  res.status(201).json({ ok: true, message: 'Thanks! We\'ll verify this and add it to the comparison shortly.' });
+  res.status(201).json({ ok: true, message: "Thanks! We'll verify this and add it to the comparison shortly." });
 });
 
 app.get('/me/scans', requireAuth, (req, res) => {
@@ -209,15 +186,9 @@ app.get('/me/scans', requireAuth, (req, res) => {
   res.json({ scans: rows });
 });
 
-// ---------------------------------------------------------------------
-// BASKET / CHECKOUT / REWARDS — see commerce.js
-// ---------------------------------------------------------------------
 app.use(commerceRouter);
 app.use(staffRouter);
-
-// ---------------------------------------------------------------------
-// ADMIN
-// ---------------------------------------------------------------------
+app.use(promosRouter);
 
 app.post('/admin/competitor-prices/upload', requireAdmin, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Attach a CSV file as "file"' });
@@ -285,6 +256,36 @@ app.post('/admin/sync-catalogue', requireAdmin, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.post('/admin/products/upload-inventory', requireAdmin, upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Attach the inventory .xlsx file as "file"' });
+
+  let parsed;
+  try {
+    parsed = parseInventoryExport(req.file.buffer);
+  } catch (err) {
+    return res.status(400).json({ error: `Could not parse file: ${err.message}` });
+  }
+
+  const upsert = db.prepare(`
+    INSERT INTO products (barcode, name, bb_price)
+    VALUES (@barcode, @name, @bb_price)
+    ON CONFLICT(barcode) DO UPDATE SET
+      name = excluded.name, bb_price = excluded.bb_price, updated_at = datetime('now')
+  `);
+
+  const tx = db.transaction((products) => {
+    products.forEach((p) => upsert.run(p));
+  });
+  tx(parsed.products);
+
+  res.json({
+    ok: true,
+    inserted: parsed.products.length,
+    skippedCount: parsed.skipped.length,
+    skipped: parsed.skipped.slice(0, 30),
+  });
 });
 
 app.get('/admin/missing-competitor-data', requireAdmin, (req, res) => {

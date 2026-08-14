@@ -1,9 +1,4 @@
 // sync.js
-// Pulls Best Before's own product catalogue (price, image, SKU/barcode)
-// from their WooCommerce REST API, so "our price" is always accurate
-// without anyone re-typing it. This needs WC_CONSUMER_KEY / SECRET from
-// Best Before's WooCommerce > Settings > Advanced > REST API screen.
-
 const fetch = require('node-fetch');
 const db = require('./db');
 

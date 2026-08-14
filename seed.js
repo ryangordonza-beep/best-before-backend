@@ -1,11 +1,4 @@
 // seed.js
-// Populates a handful of real products (from best-before.co.za's own
-// homepage) with made-up-but-plausible competitor prices, so you can try
-// the app end-to-end before wiring up WooCommerce sync / a real
-// competitor price spreadsheet.
-//
-// Run with: npm run seed
-
 const db = require('./db');
 
 const products = [
@@ -82,19 +75,11 @@ tx();
 
 // Real Best Before catalogue — 60 single-unit retail products, parsed
 // from an actual inventory export (Mark_Item_List_Examples_with_Barcodes.xlsx).
-// Wholesale case/"Kit Item" SKUs (e.g. a 12-pack case) were deliberately
-// excluded — nobody scans a case off a shelf, and comparing a case price
-// to a single-unit competitor price would produce nonsense savings math.
-//
-// Honest note: most of these are Best Before's own import/clearance
-// brands (Liberty Select, Bravo Chef, Fantico, etc.) — that's their
-// actual business model, but it also means most of these won't exist
-// under the same barcode at Pick n Pay/Checkers/Woolworths/Spar to
-// compare against. A couple (Horlicks, Corn Thins) are internationally
-// recognised brands and realistic candidates for real competitor prices.
-// A few names are truncated (e.g. "Whole Peeled Toma") because Best
-// Before's own POS system truncates the description field — not
-// something fixable without knowing the untruncated product name.
+// Wholesale case/"Kit Item" SKUs were deliberately excluded. Most of
+// these are Best Before's own import/clearance brands — genuine
+// business advantage, but it also means most won't exist under the
+// same barcode at Pick n Pay/Checkers/Woolworths/Spar to compare
+// against. Horlicks and Corn Thins are the realistic exceptions.
 const realCatalogue = [
   { barcode: '9555555300439', name: 'Bon Chef - Panko Bread Crumbs (1KG)', bb_price: 89.0 },
   { barcode: '8002720003028', name: 'Bonomi - Bihappy Ladyfinger Bis (200G)', bb_price: 44.0 },
