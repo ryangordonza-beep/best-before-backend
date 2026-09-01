@@ -51,27 +51,40 @@ const competitorPrices = [
   { barcode: '6959183300350', retailer: 'Checkers', price: 22.99 },
 ];
 
-const upsertProduct = db.prepare(`
-  INSERT INTO products (barcode, name, image_url, bb_price, bb_url)
-  VALUES (@barcode, @name, @image_url, @bb_price, @bb_url)
-  ON CONFLICT(barcode) DO UPDATE SET
-    name=excluded.name, image_url=excluded.image_url,
-    bb_price=excluded.bb_price, bb_url=excluded.bb_url, updated_at=datetime('now')
-`);
+async function seedCoreCatalogue() {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
 
-const insertPrice = db.prepare(`
-  INSERT INTO competitor_prices (barcode, retailer, price, source, verified)
-  VALUES (?, ?, ?, 'admin', 1)
-`);
+    for (const p of products) {
+      await client.query(
+        `INSERT INTO products (barcode, name, image_url, bb_price, bb_url)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (barcode) DO UPDATE SET
+           name = EXCLUDED.name, image_url = EXCLUDED.image_url,
+           bb_price = EXCLUDED.bb_price, bb_url = EXCLUDED.bb_url, updated_at = NOW()`,
+        [p.barcode, p.name, p.image_url, p.bb_price, p.bb_url]
+      );
+    }
 
-const clearPrices = db.prepare(`DELETE FROM competitor_prices WHERE source = 'admin'`);
+    await client.query(`DELETE FROM competitor_prices WHERE source = 'admin'`);
 
-const tx = db.transaction(() => {
-  products.forEach((p) => upsertProduct.run(p));
-  clearPrices.run();
-  competitorPrices.forEach((c) => insertPrice.run(c.barcode, c.retailer, c.price));
-});
-tx();
+    for (const c of competitorPrices) {
+      await client.query(
+        `INSERT INTO competitor_prices (barcode, retailer, price, source, verified)
+         VALUES ($1, $2, $3, 'admin', 1)`,
+        [c.barcode, c.retailer, c.price]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
 // Real Best Before catalogue — 60 single-unit retail products, parsed
 // from an actual inventory export (Mark_Item_List_Examples_with_Barcodes.xlsx).
@@ -143,17 +156,45 @@ const realCatalogue = [
   { barcode: '6009684160387', name: 'Liberty Select - Rolled Oats (1KG)', bb_price: 32.0 },
 ];
 
-const upsertReal = db.prepare(`
-  INSERT INTO products (barcode, name, bb_price)
-  VALUES (@barcode, @name, @bb_price)
-  ON CONFLICT(barcode) DO UPDATE SET
-    name=excluded.name, bb_price=excluded.bb_price, updated_at=datetime('now')
-`);
-const txReal = db.transaction(() => {
-  realCatalogue.forEach((p) => upsertReal.run(p));
-});
-txReal();
-console.log(`Seeded ${realCatalogue.length} real Best Before products from Mark's inventory export.`);
+async function seedRealCatalogue() {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    for (const p of realCatalogue) {
+      await client.query(
+        `INSERT INTO products (barcode, name, bb_price)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (barcode) DO UPDATE SET
+           name = EXCLUDED.name, bb_price = EXCLUDED.bb_price, updated_at = NOW()`,
+        [p.barcode, p.name, p.bb_price]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
-console.log(`Seeded ${products.length} products and ${competitorPrices.length} competitor prices.`);
-console.log('Try scanning/looking up barcode 5900649080515 once the app is running.');
+async function seed() {
+  await db.ready;
+
+  await seedCoreCatalogue();
+  console.log(`Seeded ${products.length} products and ${competitorPrices.length} competitor prices.`);
+
+  await seedRealCatalogue();
+  console.log(`Seeded ${realCatalogue.length} real Best Before products from Mark's inventory export.`);
+
+  console.log('Try scanning/looking up barcode 5900649080515 once the app is running.');
+}
+
+seed()
+  .catch((err) => {
+    console.error('Seeding failed:', err);
+    process.exitCode = 1;
+  })
+  .finally(() => db.end());
+
+module.exports = { seed };

@@ -7,17 +7,20 @@ const router = express.Router();
 
 const POINTS_RATE = 0.02;
 
-function computeBasket(userId) {
-  const items = db
-    .prepare(
-      `SELECT bi.id, bi.barcode, bi.name, bi.unit_price, bi.qty, bi.added_at,
-              (SELECT MIN(price) FROM competitor_prices
-               WHERE barcode = bi.barcode AND verified = 1) as cheapest_competitor_price
-       FROM basket_items bi
-       WHERE bi.user_id = ?
-       ORDER BY bi.added_at ASC`
-    )
-    .all(userId);
+function asyncHandler(fn) {
+  return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+}
+
+async function computeBasket(userId) {
+  const { rows: items } = await db.query(
+    `SELECT bi.id, bi.barcode, bi.name, bi.unit_price, bi.qty, bi.added_at,
+            (SELECT MIN(price) FROM competitor_prices
+             WHERE barcode = bi.barcode AND verified = 1) as cheapest_competitor_price
+     FROM basket_items bi
+     WHERE bi.user_id = $1
+     ORDER BY bi.added_at ASC`,
+    [userId]
+  );
 
   let subtotal = 0;
   let savingsEstimate = 0;
@@ -50,142 +53,158 @@ function computeBasket(userId) {
   return { items: lineItems, subtotal, savingsEstimate, estimatedPoints };
 }
 
-router.get('/basket', requireAuth, (req, res) => {
-  res.json(computeBasket(req.user.id));
-});
+router.get('/basket', requireAuth, asyncHandler(async (req, res) => {
+  res.json(await computeBasket(req.user.id));
+}));
 
-router.post('/basket/items', requireAuth, (req, res) => {
+router.post('/basket/items', requireAuth, asyncHandler(async (req, res) => {
   const { barcode, qty } = req.body || {};
   const quantity = Number.isInteger(qty) && qty > 0 ? qty : 1;
 
   if (!barcode) return res.status(400).json({ error: 'barcode is required' });
 
-  const product = db.prepare('SELECT * FROM products WHERE barcode = ?').get(barcode);
+  const { rows: productRows } = await db.query('SELECT * FROM products WHERE barcode = $1', [barcode]);
+  const product = productRows[0];
   if (!product) return res.status(404).json({ error: 'Unknown product — scan a recognised barcode first' });
 
-  const existing = db
-    .prepare('SELECT * FROM basket_items WHERE user_id = ? AND barcode = ?')
-    .get(req.user.id, barcode);
+  const { rows: existingRows } = await db.query(
+    'SELECT * FROM basket_items WHERE user_id = $1 AND barcode = $2',
+    [req.user.id, barcode]
+  );
+  const existing = existingRows[0];
 
   if (existing) {
-    db.prepare('UPDATE basket_items SET qty = qty + ? WHERE id = ?').run(quantity, existing.id);
+    await db.query('UPDATE basket_items SET qty = qty + $1 WHERE id = $2', [quantity, existing.id]);
   } else {
-    db.prepare(
+    await db.query(
       `INSERT INTO basket_items (user_id, barcode, name, unit_price, qty)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(req.user.id, barcode, product.name, product.bb_price, quantity);
+       VALUES ($1, $2, $3, $4, $5)`,
+      [req.user.id, barcode, product.name, product.bb_price, quantity]
+    );
   }
 
-  res.status(201).json(computeBasket(req.user.id));
-});
+  res.status(201).json(await computeBasket(req.user.id));
+}));
 
-router.patch('/basket/items/:id', requireAuth, (req, res) => {
+router.patch('/basket/items/:id', requireAuth, asyncHandler(async (req, res) => {
   const { qty } = req.body || {};
   if (!Number.isInteger(qty)) return res.status(400).json({ error: 'qty must be an integer' });
 
-  const item = db
-    .prepare('SELECT * FROM basket_items WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.user.id);
+  const { rows } = await db.query(
+    'SELECT * FROM basket_items WHERE id = $1 AND user_id = $2',
+    [req.params.id, req.user.id]
+  );
+  const item = rows[0];
   if (!item) return res.status(404).json({ error: 'Basket item not found' });
 
   if (qty <= 0) {
-    db.prepare('DELETE FROM basket_items WHERE id = ?').run(item.id);
+    await db.query('DELETE FROM basket_items WHERE id = $1', [item.id]);
   } else {
-    db.prepare('UPDATE basket_items SET qty = ? WHERE id = ?').run(qty, item.id);
+    await db.query('UPDATE basket_items SET qty = $1 WHERE id = $2', [qty, item.id]);
   }
 
-  res.json(computeBasket(req.user.id));
-});
+  res.json(await computeBasket(req.user.id));
+}));
 
-router.delete('/basket/items/:id', requireAuth, (req, res) => {
-  const info = db
-    .prepare('DELETE FROM basket_items WHERE id = ? AND user_id = ?')
-    .run(req.params.id, req.user.id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Basket item not found' });
-  res.json(computeBasket(req.user.id));
-});
+router.delete('/basket/items/:id', requireAuth, asyncHandler(async (req, res) => {
+  const result = await db.query(
+    'DELETE FROM basket_items WHERE id = $1 AND user_id = $2',
+    [req.params.id, req.user.id]
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Basket item not found' });
+  res.json(await computeBasket(req.user.id));
+}));
 
-router.delete('/basket', requireAuth, (req, res) => {
-  db.prepare('DELETE FROM basket_items WHERE user_id = ?').run(req.user.id);
-  res.json(computeBasket(req.user.id));
-});
+router.delete('/basket', requireAuth, asyncHandler(async (req, res) => {
+  await db.query('DELETE FROM basket_items WHERE user_id = $1', [req.user.id]);
+  res.json(await computeBasket(req.user.id));
+}));
 
-router.post('/checkout/start', requireAuth, (req, res) => {
-  const user = db.prepare('SELECT loyalty_code FROM users WHERE id = ?').get(req.user.id);
-  const basket = computeBasket(req.user.id);
+router.post('/checkout/start', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query('SELECT loyalty_code FROM users WHERE id = $1', [req.user.id]);
+  const user = rows[0];
+  const basket = await computeBasket(req.user.id);
 
   if (basket.items.length === 0) {
     return res.status(400).json({ error: 'Your basket is empty' });
   }
 
   res.json({ loyaltyCode: user.loyalty_code, basket });
-});
+}));
 
-router.post('/checkout/confirm', requireAuth, (req, res) => {
-  const basket = computeBasket(req.user.id);
+router.post('/checkout/confirm', requireAuth, asyncHandler(async (req, res) => {
+  const basket = await computeBasket(req.user.id);
   if (basket.items.length === 0) {
     return res.status(400).json({ error: 'Your basket is empty' });
   }
 
   const pointsAwarded = basket.estimatedPoints;
 
-  const tx = db.transaction(() => {
-    const txInfo = db
-      .prepare(
-        `INSERT INTO transactions (user_id, subtotal, savings_estimate, points_awarded, status)
-         VALUES (?, ?, ?, ?, 'confirmed')`
-      )
-      .run(req.user.id, basket.subtotal, basket.savingsEstimate, pointsAwarded);
+  const client = await db.connect();
+  let transactionId;
+  try {
+    await client.query('BEGIN');
 
-    const transactionId = txInfo.lastInsertRowid;
-
-    const insertItem = db.prepare(
-      `INSERT INTO transaction_items (transaction_id, barcode, name, unit_price, qty)
-       VALUES (?, ?, ?, ?, ?)`
+    const txResult = await client.query(
+      `INSERT INTO transactions (user_id, subtotal, savings_estimate, points_awarded, status)
+       VALUES ($1, $2, $3, $4, 'confirmed') RETURNING id`,
+      [req.user.id, basket.subtotal, basket.savingsEstimate, pointsAwarded]
     );
-    basket.items.forEach((item) => {
-      insertItem.run(transactionId, item.barcode, item.name, item.unitPrice, item.qty);
-    });
+    transactionId = txResult.rows[0].id;
 
-    db.prepare(
-      `INSERT INTO points_ledger (user_id, points, reason, transaction_id) VALUES (?, ?, 'purchase', ?)`
-    ).run(req.user.id, pointsAwarded, transactionId);
+    for (const item of basket.items) {
+      await client.query(
+        `INSERT INTO transaction_items (transaction_id, barcode, name, unit_price, qty)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [transactionId, item.barcode, item.name, item.unitPrice, item.qty]
+      );
+    }
 
-    db.prepare('DELETE FROM basket_items WHERE user_id = ?').run(req.user.id);
+    await client.query(
+      `INSERT INTO points_ledger (user_id, points, reason, transaction_id) VALUES ($1, $2, 'purchase', $3)`,
+      [req.user.id, pointsAwarded, transactionId]
+    );
 
-    return transactionId;
-  });
+    await client.query('DELETE FROM basket_items WHERE user_id = $1', [req.user.id]);
 
-  const transactionId = tx();
-  const pointsRow = db
-    .prepare('SELECT COALESCE(SUM(points), 0) as balance FROM points_ledger WHERE user_id = ?')
-    .get(req.user.id);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  const { rows: pointsRows } = await db.query(
+    'SELECT COALESCE(SUM(points), 0)::int as balance FROM points_ledger WHERE user_id = $1',
+    [req.user.id]
+  );
 
   res.status(201).json({
     transactionId,
     subtotal: basket.subtotal,
     savings: basket.savingsEstimate,
     pointsAwarded,
-    newPointsBalance: pointsRow.balance,
+    newPointsBalance: pointsRows[0].balance,
   });
-});
+}));
 
-router.get('/rewards', requireAuth, (req, res) => {
-  const balanceRow = db
-    .prepare('SELECT COALESCE(SUM(points), 0) as balance FROM points_ledger WHERE user_id = ?')
-    .get(req.user.id);
+router.get('/rewards', requireAuth, asyncHandler(async (req, res) => {
+  const { rows: balanceRows } = await db.query(
+    'SELECT COALESCE(SUM(points), 0)::int as balance FROM points_ledger WHERE user_id = $1',
+    [req.user.id]
+  );
 
-  const history = db
-    .prepare(
-      `SELECT points, reason, transaction_id, created_at
-       FROM points_ledger
-       WHERE user_id = ?
-       ORDER BY created_at DESC
-       LIMIT 50`
-    )
-    .all(req.user.id);
+  const { rows: history } = await db.query(
+    `SELECT points, reason, transaction_id, created_at
+     FROM points_ledger
+     WHERE user_id = $1
+     ORDER BY created_at DESC
+     LIMIT 50`,
+    [req.user.id]
+  );
 
-  const balance = balanceRow.balance;
+  const balance = balanceRows[0].balance;
   const nextMilestone = (Math.floor(balance / 50) + 1) * 50;
 
   res.json({
@@ -195,20 +214,19 @@ router.get('/rewards', requireAuth, (req, res) => {
     pointsToNextMilestone: nextMilestone - balance,
     history,
   });
-});
+}));
 
-router.get('/me/transactions', requireAuth, (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT id, subtotal, savings_estimate, points_awarded, status, created_at
-       FROM transactions
-       WHERE user_id = ?
-       ORDER BY created_at DESC
-       LIMIT 50`
-    )
-    .all(req.user.id);
+router.get('/me/transactions', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT id, subtotal, savings_estimate, points_awarded, status, created_at
+     FROM transactions
+     WHERE user_id = $1
+     ORDER BY created_at DESC
+     LIMIT 50`,
+    [req.user.id]
+  );
   res.json({ transactions: rows });
-});
+}));
 
 module.exports = router;
 module.exports.computeBasket = computeBasket;

@@ -13,18 +13,6 @@ async function syncFromWooCommerce() {
     );
   }
 
-  const upsert = db.prepare(`
-    INSERT INTO products (barcode, name, image_url, bb_price, bb_url, in_stock, updated_at)
-    VALUES (@barcode, @name, @image_url, @bb_price, @bb_url, @in_stock, datetime('now'))
-    ON CONFLICT(barcode) DO UPDATE SET
-      name = excluded.name,
-      image_url = excluded.image_url,
-      bb_price = excluded.bb_price,
-      bb_url = excluded.bb_url,
-      in_stock = excluded.in_stock,
-      updated_at = datetime('now')
-  `);
-
   let page = 1;
   let total = 0;
   let skippedNoBarcode = 0;
@@ -41,26 +29,44 @@ async function syncFromWooCommerce() {
     const items = await resp.json();
     if (!Array.isArray(items) || items.length === 0) break;
 
-    const tx = db.transaction((products) => {
-      for (const p of products) {
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      for (const p of items) {
         const barcode = (p.sku || '').trim();
         if (!/^\d{8,14}$/.test(barcode)) {
           skippedNoBarcode += 1;
           continue;
         }
 
-        upsert.run({
-          barcode,
-          name: p.name,
-          image_url: p.images && p.images[0] ? p.images[0].src : null,
-          bb_price: parseFloat(p.price || p.regular_price || '0'),
-          bb_url: p.permalink,
-          in_stock: p.stock_status === 'instock' ? 1 : 0,
-        });
+        await client.query(
+          `INSERT INTO products (barcode, name, image_url, bb_price, bb_url, in_stock, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW())
+           ON CONFLICT (barcode) DO UPDATE SET
+             name = EXCLUDED.name,
+             image_url = EXCLUDED.image_url,
+             bb_price = EXCLUDED.bb_price,
+             bb_url = EXCLUDED.bb_url,
+             in_stock = EXCLUDED.in_stock,
+             updated_at = NOW()`,
+          [
+            barcode,
+            p.name,
+            p.images && p.images[0] ? p.images[0].src : null,
+            parseFloat(p.price || p.regular_price || '0'),
+            p.permalink,
+            p.stock_status === 'instock' ? 1 : 0,
+          ]
+        );
         total += 1;
       }
-    });
-    tx(items);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
 
     page += 1;
   }
