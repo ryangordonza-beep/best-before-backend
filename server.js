@@ -11,6 +11,7 @@ const db = require('./db');
 const { signToken, requireAuth, requireAdmin } = require('./auth');
 const { syncFromWooCommerce } = require('./sync');
 const { parseInventoryExport } = require('./inventoryImport');
+const { categorise } = require('./categorise');
 const commerceRouter = require('./commerce');
 const staffRouter = require('./staff');
 const promosRouter = require('./promos');
@@ -125,6 +126,48 @@ app.get('/auth/me', requireAuth, asyncHandler(async (req, res) => {
   );
 
   res.json({ user: { ...row, points_balance: pointsRows[0].balance } });
+}));
+
+// Full catalogue for the Shop screen — every product with its single
+// cheapest verified competitor price joined in, plus a derived category.
+// NOTE: must be declared before '/products/:barcode' or ":barcode" swallows "all".
+app.get('/products/all', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT p.barcode, p.name, p.image_url, p.bb_price, p.bb_url,
+            c.retailer AS cheapest_retailer,
+            c.price    AS cheapest_price
+     FROM products p
+     LEFT JOIN LATERAL (
+       SELECT retailer, price
+       FROM competitor_prices
+       WHERE barcode = p.barcode AND verified = 1
+       ORDER BY price ASC
+       LIMIT 1
+     ) c ON true
+     ORDER BY p.name ASC`
+  );
+
+  const products = rows.map((r) => {
+    const hasComp = r.cheapest_price != null;
+    const saving = hasComp ? +(r.cheapest_price - r.bb_price).toFixed(2) : null;
+    const savingPct =
+      hasComp && r.cheapest_price > 0
+        ? +(((r.cheapest_price - r.bb_price) / r.cheapest_price) * 100).toFixed(1)
+        : null;
+    return {
+      barcode: r.barcode,
+      name: r.name,
+      image_url: r.image_url,
+      bb_price: r.bb_price,
+      bb_url: r.bb_url,
+      category: categorise(r.name),
+      cheapestCompetitor: hasComp ? { retailer: r.cheapest_retailer, price: r.cheapest_price } : null,
+      saving,
+      savingPct,
+    };
+  });
+
+  res.json({ count: products.length, products });
 }));
 
 app.get('/products/:barcode', requireAuth, asyncHandler(async (req, res) => {
