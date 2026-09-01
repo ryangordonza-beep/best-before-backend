@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>co.za.bestbefore.weekly-scrape</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/ricci-leerogalsky/best-before-backend/scripts/run-weekly-scrape.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ricci-leerogalsky/best-before-backend</string>
+
+    <!-- Mondays at 04:00 UTC (= 06:00 South Africa time).
+         launchd schedules in LOCAL time. This Mac is currently on UTC+3
+         (Europe / EEST), so 04:00 UTC = 07:00 local -> Hour = 7 below.
+         The wrapper is UTC-aware regardless: if it starts before 04:00
+         UTC it waits, and it skips PnP after 08:45 UTC — so if this
+         Mac's timezone changes, the run stays legal even before you fix
+         Hour to (4 + the new UTC offset). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- The wrapper does all real logging to logs/weekly-scrape.log;
+         these catch anything launchd emits around it. -->
+    <key>StandardOutPath</key>
+    <string>/Users/ricci-leerogalsky/best-before-backend/logs/launchd.weekly.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ricci-leerogalsky/best-before-backend/logs/launchd.weekly.err.log</string>
+</dict>
+</plist>

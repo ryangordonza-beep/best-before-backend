@@ -20,7 +20,9 @@
 
 BACKEND_DIR="$HOME/best-before-backend"
 LOG_DIR="$BACKEND_DIR/logs"
-LOG_FILE="$LOG_DIR/upload-prices.log"
+# The weekly-scrape wrapper sets PRICE_SYNC_LOG so this step's output lands
+# in weekly-scrape.log instead of its own file.
+LOG_FILE="${PRICE_SYNC_LOG:-$LOG_DIR/upload-prices.log}"
 
 mkdir -p "$LOG_DIR"
 
