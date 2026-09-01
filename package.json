@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node seed.js && node server.js",
     "seed": "node seed.js",
+    "match-prices": "node match-prices.js",
     "upload-prices": "node upload-prices.js"
   },
   "dependencies": {
