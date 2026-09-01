@@ -36,6 +36,7 @@ async function initDb() {
         source        TEXT NOT NULL DEFAULT 'admin',
         verified      INTEGER NOT NULL DEFAULT 1,
         submitted_by  INTEGER,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_competitor_barcode ON competitor_prices(barcode);
@@ -92,6 +93,33 @@ async function initDb() {
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
+
+    // --- Migrations for databases created before these columns/constraints existed ---
+    // Postgres runs each statement idempotently; safe to re-run on every boot.
+
+    // 1. competitor_prices.created_at — keep a first-seen timestamp so upserts
+    //    don't erase price history. Backfill existing rows from updated_at.
+    await client.query(`
+      ALTER TABLE competitor_prices ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;
+      UPDATE competitor_prices SET created_at = updated_at WHERE created_at IS NULL;
+      ALTER TABLE competitor_prices ALTER COLUMN created_at SET DEFAULT NOW();
+      ALTER TABLE competitor_prices ALTER COLUMN created_at SET NOT NULL;
+    `);
+
+    // 2. One admin price per (barcode, retailer). De-duplicate any pre-existing
+    //    admin rows (keep the newest id) before adding the partial unique index
+    //    that the /admin/competitor-prices/upload upsert targets.
+    await client.query(`
+      DELETE FROM competitor_prices a
+      USING competitor_prices b
+      WHERE a.source = 'admin' AND b.source = 'admin'
+        AND a.barcode = b.barcode AND a.retailer = b.retailer
+        AND a.id < b.id;
+      CREATE UNIQUE INDEX IF NOT EXISTS competitor_prices_admin_barcode_retailer_uniq
+        ON competitor_prices (barcode, retailer)
+        WHERE source = 'admin';
+    `);
+
     console.log('Database initialised');
   } finally {
     client.release();

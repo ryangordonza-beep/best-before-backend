@@ -222,6 +222,7 @@ app.post('/admin/competitor-prices/upload', requireAdmin, upload.single('file'),
 
   const validRetailers = ['Pick n Pay', 'Checkers', 'Woolworths', 'Spar'];
   let inserted = 0;
+  let updated = 0;
   const errors = [];
 
   const client = await db.connect();
@@ -238,16 +239,20 @@ app.post('/admin/competitor-prices/upload', requireAdmin, upload.single('file'),
         continue;
       }
 
-      await client.query(
-        `DELETE FROM competitor_prices WHERE barcode = $1 AND retailer = $2 AND source = 'admin'`,
-        [barcode, retailer]
-      );
-      await client.query(
-        `INSERT INTO competitor_prices (barcode, retailer, price, source, verified, updated_at)
-         VALUES ($1, $2, $3, 'admin', 1, NOW())`,
+      // Upsert on the (barcode, retailer) partial unique index for admin rows.
+      // created_at is preserved on conflict so we keep the first-seen date;
+      // updated_at tracks the latest price change. xmax = 0 ⇒ this was a fresh
+      // insert, otherwise it replaced an existing row.
+      const result = await client.query(
+        `INSERT INTO competitor_prices (barcode, retailer, price, source, verified, created_at, updated_at)
+         VALUES ($1, $2, $3, 'admin', 1, NOW(), NOW())
+         ON CONFLICT (barcode, retailer) WHERE source = 'admin'
+         DO UPDATE SET price = EXCLUDED.price, verified = 1, updated_at = NOW()
+         RETURNING (xmax = 0) AS was_insert`,
         [barcode, retailer, price]
       );
-      inserted += 1;
+      if (result.rows[0].was_insert) inserted += 1;
+      else updated += 1;
     }
 
     await client.query('COMMIT');
@@ -258,7 +263,14 @@ app.post('/admin/competitor-prices/upload', requireAdmin, upload.single('file'),
     client.release();
   }
 
-  res.json({ ok: true, inserted, errorCount: errors.length, errors: errors.slice(0, 20) });
+  res.json({
+    ok: true,
+    upserted: inserted + updated,
+    inserted,
+    updated,
+    errorCount: errors.length,
+    errors: errors.slice(0, 20),
+  });
 }));
 
 app.post('/admin/competitor-prices/:id/approve', requireAdmin, asyncHandler(async (req, res) => {

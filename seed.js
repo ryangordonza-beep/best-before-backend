@@ -67,12 +67,15 @@ async function seedCoreCatalogue() {
       );
     }
 
-    await client.query(`DELETE FROM competitor_prices WHERE source = 'admin'`);
-
+    // Upsert seed prices instead of wiping all admin rows — `npm start` runs
+    // this on every boot, and a blanket DELETE would erase prices pushed by
+    // upload-prices.js between deploys.
     for (const c of competitorPrices) {
       await client.query(
         `INSERT INTO competitor_prices (barcode, retailer, price, source, verified)
-         VALUES ($1, $2, $3, 'admin', 1)`,
+         VALUES ($1, $2, $3, 'admin', 1)
+         ON CONFLICT (barcode, retailer) WHERE source = 'admin'
+         DO UPDATE SET price = EXCLUDED.price, verified = 1, updated_at = NOW()`,
         [c.barcode, c.retailer, c.price]
       );
     }
