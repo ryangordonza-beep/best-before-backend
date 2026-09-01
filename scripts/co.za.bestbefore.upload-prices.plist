@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>co.za.bestbefore.upload-prices</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/ricci-leerogalsky/best-before-backend/scripts/run-upload-prices.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ricci-leerogalsky/best-before-backend</string>
+
+    <!-- Every Monday at 06:00. If the Mac is asleep/off at that time,
+         launchd runs the job once when it next wakes (missed runs are
+         not stacked). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- The wrapper writes the real run log to logs/upload-prices.log;
+         these two catch anything launchd emits outside of that. -->
+    <key>StandardOutPath</key>
+    <string>/Users/ricci-leerogalsky/best-before-backend/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ricci-leerogalsky/best-before-backend/logs/launchd.err.log</string>
+</dict>
+</plist>
