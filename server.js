@@ -9,6 +9,7 @@ const { parse } = require('csv-parse/sync');
 
 const db = require('./db');
 const { signToken, requireAuth, requireAdmin } = require('./auth');
+const { sendSms } = require('./bulksms');
 const { syncFromWooCommerce } = require('./sync');
 const { parseInventoryExport } = require('./inventoryImport');
 const { categorise } = require('./categorise');
@@ -42,6 +43,34 @@ function normalisePhone(raw) {
   if (digits.length === 10 && digits.startsWith('0')) return digits;
   if (digits.length === 11 && digits.startsWith('27')) return '0' + digits.slice(2);
   return null;
+}
+
+// --- Phone OTP verification (BulkSMS) ---
+const OTP_EXPIRY_MINUTES = 5;
+const OTP_RESEND_COOLDOWN_SECONDS = 30;
+const OTP_MAX_ATTEMPTS = 5;
+
+function generateOtpCode() {
+  return crypto.randomInt(0, 1000000).toString().padStart(6, '0');
+}
+
+function hashOtpCode(code) {
+  return crypto.createHash('sha256').update(code).digest('hex');
+}
+
+// Generates a code, stores its hash (5 min expiry) and sends it by SMS.
+// Throws if BulkSMS fails — callers decide whether that should fail the
+// request or just be logged (see /auth/register vs /auth/send-otp).
+async function issueOtp(userId, phone) {
+  const code = generateOtpCode();
+  const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
+
+  await db.query(
+    'INSERT INTO phone_otps (user_id, code_hash, expires_at) VALUES ($1, $2, $3)',
+    [userId, hashOtpCode(code), expiresAt]
+  );
+
+  await sendSms(phone, `Your Best Before verification code is: ${code}. Valid for ${OTP_EXPIRY_MINUTES} minutes.`);
 }
 
 app.post('/auth/register', asyncHandler(async (req, res) => {
@@ -93,8 +122,18 @@ app.post('/auth/register', asyncHandler(async (req, res) => {
     client.release();
   }
 
-  const user = { id: userId, name: name.trim(), email: email.toLowerCase() };
-  res.status(201).json({ token: signToken(user), user });
+  // Best-effort: a flaky SMS provider shouldn't fail registration. The
+  // frontend can retry via POST /auth/send-otp if this didn't land.
+  let otpSent = true;
+  try {
+    await issueOtp(userId, normalisedPhone);
+  } catch (err) {
+    otpSent = false;
+    console.error(`Could not send registration OTP to user ${userId}:`, err.message);
+  }
+
+  const user = { id: userId, name: name.trim(), email: email.toLowerCase(), phone_verified: false };
+  res.status(201).json({ token: signToken(user), user, otpSent });
 }));
 
 app.post('/auth/login', asyncHandler(async (req, res) => {
@@ -108,13 +147,13 @@ app.post('/auth/login', asyncHandler(async (req, res) => {
   const ok = await bcrypt.compare(password, row.password_hash);
   if (!ok) return res.status(401).json({ error: 'Invalid email or password' });
 
-  const user = { id: row.id, name: row.name, email: row.email };
+  const user = { id: row.id, name: row.name, email: row.email, phone_verified: row.phone_verified };
   res.json({ token: signToken(user), user });
 }));
 
 app.get('/auth/me', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
-    'SELECT id, name, email, phone, loyalty_code FROM users WHERE id = $1',
+    'SELECT id, name, email, phone, phone_verified, loyalty_code FROM users WHERE id = $1',
     [req.user.id]
   );
   const row = rows[0];
@@ -126,6 +165,71 @@ app.get('/auth/me', requireAuth, asyncHandler(async (req, res) => {
   );
 
   res.json({ user: { ...row, points_balance: pointsRows[0].balance } });
+}));
+
+app.post('/auth/send-otp', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query('SELECT phone, phone_verified FROM users WHERE id = $1', [req.user.id]);
+  const row = rows[0];
+  if (!row) return res.status(404).json({ error: 'User not found' });
+  if (!row.phone) return res.status(400).json({ error: 'No phone number on file for this account' });
+  if (row.phone_verified) return res.json({ ok: true, alreadyVerified: true });
+
+  const { rows: recentRows } = await db.query(
+    'SELECT created_at FROM phone_otps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1',
+    [req.user.id]
+  );
+  if (recentRows[0]) {
+    const secondsSinceLast = (Date.now() - new Date(recentRows[0].created_at).getTime()) / 1000;
+    if (secondsSinceLast < OTP_RESEND_COOLDOWN_SECONDS) {
+      return res.status(429).json({
+        error: `Please wait ${Math.ceil(OTP_RESEND_COOLDOWN_SECONDS - secondsSinceLast)}s before requesting another code`,
+      });
+    }
+  }
+
+  try {
+    await issueOtp(req.user.id, row.phone);
+  } catch (err) {
+    return res.status(502).json({ error: 'Could not send verification SMS. Please try again shortly.' });
+  }
+
+  res.json({ ok: true, expiresInMinutes: OTP_EXPIRY_MINUTES });
+}));
+
+app.post('/auth/verify-otp', requireAuth, asyncHandler(async (req, res) => {
+  const { code } = req.body || {};
+  if (!code || !/^\d{6}$/.test(String(code))) {
+    return res.status(400).json({ error: 'Enter the 6-digit code sent to your phone' });
+  }
+
+  const { rows } = await db.query(
+    `SELECT * FROM phone_otps
+     WHERE user_id = $1 AND consumed_at IS NULL
+     ORDER BY created_at DESC LIMIT 1`,
+    [req.user.id]
+  );
+  const otp = rows[0];
+  if (!otp) return res.status(400).json({ error: 'No verification code found. Request a new one.' });
+
+  if (new Date(otp.expires_at).getTime() < Date.now()) {
+    await db.query('UPDATE phone_otps SET consumed_at = NOW() WHERE id = $1', [otp.id]);
+    return res.status(400).json({ error: 'That code has expired. Request a new one.' });
+  }
+
+  if (otp.attempts >= OTP_MAX_ATTEMPTS) {
+    await db.query('UPDATE phone_otps SET consumed_at = NOW() WHERE id = $1', [otp.id]);
+    return res.status(429).json({ error: 'Too many incorrect attempts. Request a new code.' });
+  }
+
+  if (hashOtpCode(String(code)) !== otp.code_hash) {
+    await db.query('UPDATE phone_otps SET attempts = attempts + 1 WHERE id = $1', [otp.id]);
+    return res.status(400).json({ error: 'Incorrect code. Please try again.' });
+  }
+
+  await db.query('UPDATE phone_otps SET consumed_at = NOW() WHERE id = $1', [otp.id]);
+  await db.query('UPDATE users SET phone_verified = true WHERE id = $1', [req.user.id]);
+
+  res.json({ ok: true, phoneVerified: true });
 }));
 
 // Full catalogue for the Shop screen — every product with its single
@@ -219,7 +323,7 @@ app.post('/products/:barcode/submit-price', requireAuth, asyncHandler(async (req
   const { barcode } = req.params;
   const { retailer, price } = req.body || {};
 
-  const validRetailers = ['Pick n Pay', 'Checkers', 'Woolworths', 'Spar'];
+  const validRetailers = ['Pick n Pay', 'Checkers', 'Woolworths', 'Spar', 'Makro'];
   if (!validRetailers.includes(retailer)) {
     return res.status(400).json({ error: `retailer must be one of ${validRetailers.join(', ')}` });
   }
@@ -263,7 +367,7 @@ app.post('/admin/competitor-prices/upload', requireAdmin, upload.single('file'),
     return res.status(400).json({ error: `Could not parse CSV: ${err.message}` });
   }
 
-  const validRetailers = ['Pick n Pay', 'Checkers', 'Woolworths', 'Spar'];
+  const validRetailers = ['Pick n Pay', 'Checkers', 'Woolworths', 'Spar', 'Makro'];
   let inserted = 0;
   let updated = 0;
   const errors = [];

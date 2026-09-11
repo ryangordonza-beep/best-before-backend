@@ -120,6 +120,22 @@ async function initDb() {
         WHERE source = 'admin';
     `);
 
+    // 3. Phone OTP verification (BulkSMS). One-time codes are stored as a
+    //    salted hash, never plaintext, and expire 5 minutes after issue.
+    await client.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT false;
+      CREATE TABLE IF NOT EXISTS phone_otps (
+        id          SERIAL PRIMARY KEY,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        code_hash   TEXT NOT NULL,
+        expires_at  TIMESTAMPTZ NOT NULL,
+        consumed_at TIMESTAMPTZ,
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_phone_otps_user ON phone_otps(user_id);
+    `);
+
     console.log('Database initialised');
   } finally {
     client.release();
