@@ -232,6 +232,39 @@ app.post('/auth/verify-otp', requireAuth, asyncHandler(async (req, res) => {
   res.json({ ok: true, phoneVerified: true });
 }));
 
+// Public, unauthenticated: a handful of the biggest rand-value savings vs
+// competitors, for the marketing landing page hero. Deliberately minimal —
+// no barcodes, images, or full catalogue — unlike /products/all below,
+// which requires a logged-in user.
+app.get('/public/top-savings', asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT p.name, p.bb_price,
+            c.retailer AS competitor_retailer,
+            c.price    AS competitor_price
+     FROM products p
+     JOIN LATERAL (
+       SELECT retailer, price
+       FROM competitor_prices
+       WHERE barcode = p.barcode AND verified = 1
+       ORDER BY price ASC
+       LIMIT 1
+     ) c ON true
+     WHERE c.price > p.bb_price
+     ORDER BY (c.price - p.bb_price) DESC
+     LIMIT 8`
+  );
+
+  const items = rows.map((r) => ({
+    name: r.name,
+    bb_price: +r.bb_price,
+    competitor_retailer: r.competitor_retailer,
+    competitor_price: +r.competitor_price,
+    saving: +(r.competitor_price - r.bb_price).toFixed(2),
+  }));
+
+  res.json({ items });
+}));
+
 // Full catalogue for the Shop screen — every product with its single
 // cheapest verified competitor price joined in, plus a derived category.
 // NOTE: must be declared before '/products/:barcode' or ":barcode" swallows "all".
